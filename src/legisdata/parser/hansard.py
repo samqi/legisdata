@@ -5,11 +5,13 @@ from itertools import chain
 from math import inf
 
 import structlog
+from lxml import builder, etree
 from unstructured.documents.elements import Element, Title
 
 from legisdata.parser.common import (
-    check_is_oral_inquiry_answer,
+    check_is_answer_to_inquiry,
     check_is_oral_inquiry_heading,
+    check_is_written_inquiry_heading,
     last_item_replace,
     unpickler,
 )
@@ -58,6 +60,53 @@ class HansardSection(Enum):
     QUESTION = auto()
     ANSWER = auto()
     END = auto()
+
+def akn_get_container(E: builder.ElementMaker, component: Speech | Questions):
+    return (
+        E.speech(
+            E(
+                "from",
+                component.by.name,
+            ),
+            E.div(*[E.p(item.value) for item in component.content]),
+        )
+        if isinstance(component, Speech)
+        else E.questions(
+            *[
+                E(
+                    "question" if isinstance(item, Question) else "answer",
+                    E("from", item.by.name),
+                    E.div(*[E.p(content.value) for content in item.content]),
+                )
+                for item in component.content
+            ]
+        )
+    )
+
+
+def akn_populate(hansard: Hansard) -> Hansard:
+    E = builder.ElementMaker()
+
+    return hansard._replace(
+        akn=etree.tostring(
+            E.akomaNtoso(
+                E.debate(
+                    E.debateBody(
+                        E.debateSection(
+                            *[
+                                akn_get_container(E, content)
+                                for content in hansard.debate
+                            ]
+                        ),
+                    ),
+                    name="hansard",
+                )
+            ),
+            pretty_print=True,  # type: ignore
+            xml_declaration=True,  # type: ignore
+            encoding="utf-8",  # type: ignore
+        ).decode("utf-8")
+    )
 
 
 def assembly_person_parse(
@@ -263,7 +312,9 @@ def check_is_speakline_alternative(element: Element, section: HansardSection) ->
 
 def cache_append_element(cache: HansardCache, element: Element) -> HansardCache:
     return cache._replace(
-        is_question=cache.is_question or check_is_oral_inquiry_heading(element),
+        is_question=cache.is_question
+        or check_is_oral_inquiry_heading(element)
+        or check_is_written_inquiry_heading(element),
         content=[
             *cache.content,
             ContentElement(
@@ -493,7 +544,7 @@ def parse(
             elif (
                 section == HansardSection.START
                 and cache
-                and not check_is_oral_inquiry_answer(element)
+                and not check_is_answer_to_inquiry(element)
             ):
                 cache = cache_append_element(cache, element)
 
@@ -505,6 +556,8 @@ def parse(
                     element=element,
                     text=element.text,
                 )
+
+        parsed = akn_populate(parsed)
 
         file_name = "{}/{}".format(
             parse_path,

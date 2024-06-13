@@ -27,6 +27,7 @@ class Meta(NamedTuple):
 
 class Inquiry(NamedTuple):
     meta: Meta
+    is_oral: bool = False
     inquirer: Person | None = None
     respondent: Person | None = None
     number: int | None = None
@@ -42,7 +43,7 @@ class Inquiry(NamedTuple):
             result = None
 
             if value is None:
-                result = None
+                result = value
             elif isinstance(value, str) or isinstance(value, int):  # eg. title
                 result = value
             elif isinstance(value, list):
@@ -90,6 +91,7 @@ class Question(NamedTuple):
     by: Person
     role: str | None
     content: list[ContentElement]
+    is_oral: bool = False
 
 
 class Answer(NamedTuple):
@@ -129,7 +131,7 @@ class Hansard(NamedTuple):
     def json(self) -> str:
         def dump_value(
             value: Union[
-                list[Person], list[Union[Speech, Questions]], NamedTuple, None
+                list[Person], list[Union[Speech, Questions]], NamedTuple, str, None
             ],
         ) -> Any:
             result = None
@@ -139,6 +141,9 @@ class Hansard(NamedTuple):
                     item._asdict() if isinstance(item, Person) else item.dump()
                     for item in value
                 ]
+
+            elif isinstance(value, str):
+                result = value
 
             elif value is not None:
                 result = value._asdict()

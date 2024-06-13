@@ -1,17 +1,73 @@
 import os
+from ast import Assert
 
 import structlog
+from lxml import builder, etree
 from unstructured.documents.elements import Element, ListItem, Title
 
 from legisdata.parser.common import (
-    check_is_oral_inquiry_answer,
+    check_is_answer_to_inquiry,
     check_is_oral_inquiry_heading,
+    check_is_written_inquiry_heading,
     last_item_replace,
     unpickler,
 )
 from legisdata.schema import ContentElement, Inquiry, Meta, Person
 
 logger = structlog.get_logger()
+
+
+def akn_populate(inquiry: Inquiry) -> Inquiry:
+    if not (inquiry.inquirer and inquiry.respondent):
+        return inquiry
+
+    E = builder.ElementMaker()
+
+    return inquiry._replace(
+        akn=etree.tostring(
+            E.akomaNtoso(
+                E.debate(
+                    E.debateBody(
+                        E.debateSection(
+                            E(
+                                "oralStatement"
+                                if inquiry.is_oral
+                                else "writtenStatement",
+                                E.question(
+                                    E("from", inquiry.inquirer.name),
+                                    *[
+                                        E.div(*[E.p(item.value) for item in inquiries])
+                                        for inquiries in inquiry.inquiries
+                                    ],
+                                ),
+                                *(
+                                    [
+                                        E.answer(
+                                            E("from", inquiry.respondent.name),
+                                            *[
+                                                E.div(
+                                                    *[
+                                                        E.p(item.value)
+                                                        for item in responds
+                                                    ]
+                                                )
+                                                for responds in inquiry.responds
+                                            ],
+                                        )
+                                    ]
+                                    if inquiry.responds
+                                    else []
+                                ),
+                            ),
+                        )
+                    )
+                )
+            ),
+            pretty_print=True,  # type: ignore
+            xml_declaration=True,  # type: ignore
+            encoding="utf-8",  # type: ignore
+        ).decode("utf-8")
+    )
 
 
 def check_is_new_content(inquiry: Inquiry, is_question: bool, element: Element) -> bool:
@@ -63,7 +119,12 @@ def content_insert_new(
 
 
 def create_new(
-    element: Element, file_entry: os.DirEntry, year: int, session: int, dun: str
+    element: Element,
+    file_entry: os.DirEntry,
+    year: int,
+    session: int,
+    dun: str,
+    is_oral: bool,
 ) -> Inquiry:
     return Inquiry(
         inquirer=Person(
@@ -72,6 +133,7 @@ def create_new(
             ].strip(),
             area=element.text[element.text.find("(") + 1 : element.text.find(")")],
         ),
+        is_oral=is_oral,
         meta=Meta(
             source=file_entry.path,
             year=year,
@@ -88,7 +150,10 @@ def parse(
     parse_path: str,
 ) -> None:
     for file_idx, (file_entry, elements) in enumerate(map(unpickler, inquiry_files)):
-        if not check_is_oral_inquiry_heading(elements[0]):
+        if not (
+            check_is_oral_inquiry_heading(elements[0])
+            or check_is_written_inquiry_heading(elements[0])
+        ):
             logger.info(
                 f"Skipping non inquiry file {file_idx + 1}/{len(inquiry_files)}",
                 path=file_entry.path,
@@ -104,7 +169,12 @@ def parse(
         for idx, element in enumerate(elements):
             if check_is_oral_inquiry_heading(element):
                 parsed.append(
-                    create_new(element, file_entry, year, session, "selangor")
+                    create_new(element, file_entry, year, session, "selangor", True)
+                )
+
+            elif check_is_written_inquiry_heading(element):
+                parsed.append(
+                    create_new(element, file_entry, year, session, "selangor", False)
                 )
 
             elif check_is_title(element):
@@ -115,7 +185,7 @@ def parse(
 
                 parsed.append(respondent_insert(parsed.pop(), element))
 
-            elif check_is_oral_inquiry_answer(element):
+            elif check_is_answer_to_inquiry(element):
                 is_question = False
 
             else:
@@ -132,6 +202,8 @@ def parse(
                     parsed.append(
                         content_append_element(parsed.pop(), item, is_question)
                     )
+
+            parsed.append(akn_populate(parsed.pop()))
 
         for idx, inquiry in enumerate(parsed):
             file_name = "{}/{}".format(
