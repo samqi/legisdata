@@ -1,5 +1,4 @@
 import os
-from ast import Assert
 
 import structlog
 from lxml import builder, etree
