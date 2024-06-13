@@ -4,7 +4,10 @@ import os
 import pickle
 import time
 from datetime import datetime
+from enum import Enum, auto
+from functools import reduce
 from itertools import chain
+from math import inf
 from posixpath import basename
 from random import randrange
 from typing import Any, Iterable, List, NamedTuple, Union
@@ -14,16 +17,52 @@ import structlog
 import typer
 from huggingface_hub import HfApi
 from parsel import Selector
-from unstructured.documents.elements import Element, Image, ListItem, Table, Title
+from unstructured.documents.elements import Element, ListItem, Title
 from unstructured.partition.pdf import partition_pdf
 
 app = typer.Typer()
 api = HfApi()
 logger = structlog.get_logger()
 
+HANSARD_ROLES = (
+    "TUAN SPEAKER",
+    "Y.B TUAN SPEAKER",
+    "Y.B. TUAN SPEAKER",
+    "TUAN TIMBALAN SPEAKER",
+    "Y.B TUAN TIMBALAN SPEAKER",
+    "Y.B. TUAN TIMBALAN SPEAKER",
+    "SETIAUSAHA DEWAN",
+    "Y.A.B. DATO' MENTERI BESAR",
+)
+HANSARD_SPEAKERS = (
+    "TUAN SPEAKER",
+    "Y.B TUAN SPEAKER",
+    "Y.B. TUAN SPEAKER",
+    "TUAN TIMBALAN SPEAKER",
+    "Y.B TUAN TIMBALAN SPEAKER",
+    "Y.B. TUAN TIMBALAN SPEAKER",
+)
+
+
+class HansardSection(Enum):
+    DOCUMENT_START = auto()
+    PRESENT = auto()
+    ABSENT = auto()
+    GUEST = auto()
+    OFFICER = auto()
+    START = auto()
+    SPEECH = auto()
+    QUESTION = auto()
+    ANSWER = auto()
+    END = auto()
+
+
 class Person(NamedTuple):
     name: str
+    raw: str | None = None
+    title: list[str] = []
     area: str | None = None
+    role: str | None = None
 
 
 class ContentElement(NamedTuple):
@@ -61,18 +100,116 @@ class Inquiry(NamedTuple):
             elif isinstance(value, str) or isinstance(value, int):  # eg. title
                 result = value
             elif isinstance(value, list):
-                result = [[item._asdict() for item in sub_list] for sub_list in value]
+                result = [
+                    [
+                        dict(item._asdict(), _type=item.__class__.__name__)
+                        for item in sub_list
+                    ]
+                    for sub_list in value
+                ]
             else:
-                result = value._asdict()
+                result = dict(value._asdict(), _type=value.__class__.__name__)
 
             return result
 
         return json.dumps(
             {
                 key: dump_value(value)
-                for key, value in dict(self._asdict(), type="inquiry").items()
-            }
+                for key, value in dict(
+                    self._asdict(), _type=self.__class__.__name__
+                ).items()
+            },
+            indent=2,
         )
+
+
+class Speech(NamedTuple):
+    by: Person
+    role: str | None
+    content: list[ContentElement]
+
+    def dump(self) -> dict[Any, Any]:
+        return {
+            "by": dict(self.by._asdict(), _type=self.by.__class__.__name__),
+            "role": self.role,
+            "content": [
+                dict(item._asdict(), _type=item.__class__.__name__)
+                for item in self.content
+            ],
+            "_type": self.__class__.__name__,
+        }
+
+
+class Question(NamedTuple):
+    by: Person
+    role: str | None
+    content: list[ContentElement]
+
+
+class Answer(NamedTuple):
+    by: Person
+    role: str | None
+    content: list[ContentElement]
+
+
+class Questions(NamedTuple):
+    content: list[Question | Answer]
+
+    def dump(self) -> dict[Any, Any]:
+        return {
+            "content": [
+                dict(
+                    dict(
+                        item._asdict(),
+                        by=dict(item.by._asdict(), _type=item.by.__class__.__name__),
+                    ),
+                    _type=item.__class__.__name__,
+                )
+                for item in self.content
+            ],
+            "_type": self.__class__.__name__,
+        }
+
+
+class Hansard(NamedTuple):
+    meta: Meta
+    present: list[Person] = []
+    absent: list[Person] = []
+    guest: list[Person] = []
+    officer: list[Person] = []
+    debate: list[Speech | Questions] = []
+    akn: str | None = None
+
+    def json(self) -> str:
+        def dump_value(
+            value: Union[list[Person], list[Union[Speech, Questions]], NamedTuple],
+        ) -> Any:
+            result = None
+
+            if isinstance(value, list):
+                result = [
+                    item._asdict() if isinstance(item, Person) else item.dump()
+                    for item in value
+                ]
+
+            else:
+                result = value._asdict()
+
+            return result
+
+        return json.dumps(
+            dict(
+                {key: dump_value(value) for key, value in dict(self._asdict()).items()},
+                _type=self.__class__.__name__,
+            ),
+            indent=2,
+        )
+
+
+class HansardCache(NamedTuple):
+    speaker: Person
+    content: list[ContentElement]
+    is_question: bool = False
 
 
 @app.command()
@@ -163,6 +300,12 @@ def parse(year: int, session: int) -> None:
     for archive_path in (hansard_path, inquiry_path):
         os.makedirs(archive_path.replace("extract", "parse"), exist_ok=True)
 
+    hansard_parse(
+        year,
+        session,
+        tuple(target for target in os.scandir(hansard_path) if target.is_file()),
+        hansard_path.replace("extract", "parse"),
+    )
     inquiry_parse(
         year,
         session,
@@ -247,17 +390,17 @@ def archive_exists(*archive_list: Iterable[str]) -> bool:
     return all(os.path.exists(archive_path) for archive_path in archive_list)  # type: ignore
 
 
-def check_is_enquiry_answer(element: Element) -> bool:
+def check_is_inquiry_answer(element: Element) -> bool:
     return isinstance(element, Title) and element.text.upper().startswith("JAWAPAN")
 
 
-def check_is_enquiry_heading(element: Element) -> bool:
+def check_is_inquiry_heading(element: Element) -> bool:
     return isinstance(element, Title) and element.text.upper().startswith(
         "PERTANYAAN-PERTANYAAN MULUT DARIPADA"
     )
 
 
-def check_is_enquiry_new_content(
+def check_is_inquiry_new_content(
     inquiry: Inquiry, is_question: bool, element: Element
 ) -> bool:
     return (
@@ -267,19 +410,538 @@ def check_is_enquiry_new_content(
     )
 
 
-def check_is_enquiry_respondent_mention(element) -> bool:
+def check_is_inquiry_respondent_mention(element) -> bool:
     return element.text.lower().find("bertanya kepada") in range(6)
 
 
-def check_is_enquiry_title(element: Element) -> bool:
+def check_is_inquiry_title(element: Element) -> bool:
     return isinstance(element, Title) and element.text.upper().startswith("TAJUK")
 
 
+def check_is_hansard_answer(current: Hansard) -> bool:
+    return (
+        len(current.debate) > 0
+        and isinstance(current.debate[-1], Questions)
+        and (
+            (
+                isinstance(current.debate[-1].content[-1], Answer)
+                and current.debate[-1].content[-1].by.name in HANSARD_SPEAKERS
+            )
+            or not isinstance(current.debate[-1].content[-1], Answer)
+        )
+    )
+
+
+def check_is_hansard_assembly_person(element: Element, section: HansardSection) -> bool:
+    text = element.text.upper().strip()
+
+    return section in (HansardSection.PRESENT, HansardSection.ABSENT) and (
+        text.startswith("Y.B") or text.startswith("Y.A.B")
+    )
+
+
+def check_is_hansard_assembly_role(element: Element, section: HansardSection) -> bool:
+    text = element.text.strip()
+
+    return (
+        section == HansardSection.PRESENT
+        and text.startswith("(")
+        and text.endswith(")")
+    )
+
+
+def check_is_hansard_event(element: Element, section: HansardSection) -> bool:
+    return (
+        section
+        in (
+            HansardSection.START,
+            HansardSection.SPEECH,
+            HansardSection.QUESTION,
+            HansardSection.ANSWER,
+        )
+        and ")" in element.text
+        and element.text.replace(")", ")\n").splitlines()[0].startswith("(")
+    )
+
+
+def check_is_hansard_guest(element: Element, section: HansardSection) -> bool:
+    text = element.text.upper().strip()
+
+    return section == HansardSection.GUEST and (text.startswith("Y.B"))
+
+
+def check_is_hansard_header(element: Element, header: Element) -> bool:
+    return element.text.upper().strip() == header.text.upper().strip()
+
+
+def check_is_hansard_officer(element: Element, section: HansardSection) -> bool:
+    text = element.text.lower().strip()
+
+    return (
+        section == HansardSection.OFFICER
+        and text.startswith("encik")
+        or text.startswith("puan")
+    )
+
+
+def check_is_hansard_page(element: Element) -> bool:
+    return element.text.strip().isdigit()
+
+
+def check_is_hansard_section_absent(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.PRESENT
+        and isinstance(element, Title)
+        and element.text.upper().strip().startswith("TIDAK HADIR")
+    )
+
+
+def check_is_hansard_section_end(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.START
+        and isinstance(element, Title)
+        and element.text.upper().strip("( )").startswith("DEWAN DITANGGUHKAN")
+    )
+
+
+def check_is_hansard_section_guest(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.ABSENT
+        and isinstance(element, Title)
+        and element.text.upper().strip() == "TURUT HADIR"
+    )
+
+
+def check_is_hansard_section_officer(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.GUEST
+        and isinstance(element, Title)
+        and element.text.upper().strip() == "PEGAWAI BERTUGAS"
+    )
+
+
+def check_is_hansard_section_present(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.DOCUMENT_START
+        and isinstance(element, Title)
+        and element.text.upper().strip() == "YANG HADIR"
+    )
+
+
+def check_is_hansard_section_start(element: Element, section: HansardSection) -> bool:
+    return (
+        section == HansardSection.OFFICER
+        and isinstance(element, Title)
+        and "mempengerusikan mesyuarat" in element.text.lower()
+    )
+
+
+def check_is_hansard_speakline(
+    element: Element, section: HansardSection, hansard: Hansard
+) -> bool:
+    text = element.text.strip().upper()
+
+    return section in (
+        HansardSection.START,
+        HansardSection.SPEECH,
+        HansardSection.QUESTION,
+        HansardSection.ANSWER,
+    ) and (
+        any(
+            text.startswith(person.raw.upper())
+            for person in chain(hansard.present, hansard.guest)
+            if person.raw
+        )
+        or any(text.startswith(role) for role in HANSARD_ROLES)
+        or any(
+            text.startswith(person.role.upper())
+            for person in hansard.officer
+            if person.role
+        )
+    )
+
+
+def check_is_hansard_speakline_alternative(
+    element: Element, section: HansardSection
+) -> bool:
+    items = element.text.split(" ")
+    return (
+        section
+        in (
+            HansardSection.START,
+            HansardSection.SPEECH,
+            HansardSection.QUESTION,
+            HansardSection.ANSWER,
+        )
+        and ":" in items
+        and items.index(":") < 10
+        and not element.text.strip().upper().startswith("TAJUK")
+        and not element.text.strip().upper().startswith("JAWAPAN")
+    )
+
+
+def hansard_cache_insert_element(cache: HansardCache, element: Element) -> HansardCache:
+    return cache._replace(
+        is_question=cache.is_question or check_is_inquiry_heading(element),
+        content=cache.content
+        + [
+            ContentElement(
+                type=type(element).__name__.lower(),
+                value=element.metadata.text_as_html or element.text,
+                image=element.metadata.image_base64,
+            )
+        ],
+    )
+
+
+def hansard_insert_cache(cache: HansardCache, current: Hansard) -> Hansard:
+    if not cache:
+        return current
+
+    result = current
+
+    if cache.is_question:
+        result = current._replace(
+            debate=current.debate
+            + [
+                Questions(
+                    content=[
+                        Question(by=cache.speaker, role=None, content=cache.content)
+                    ]
+                )
+            ]
+        )
+
+    elif check_is_hansard_answer(current):
+        questions = current.debate[-1]
+
+        result = current._replace(
+            debate=current.debate[:-1]
+            + [
+                questions._replace(
+                    content=questions.content
+                    + [Answer(by=cache.speaker, role=None, content=cache.content)]
+                )
+            ]
+        )
+
+    else:
+        result = current._replace(
+            debate=current.debate
+            + [Speech(by=cache.speaker, role=None, content=cache.content)]
+        )
+
+    return result
+
+
+def hansard_parse(
+    year: int,
+    session: int,
+    hansard_files: tuple[os.DirEntry[str], ...],
+    parse_path: str,
+) -> None:
+    for file_idx, (file_entry, elements) in enumerate(map(unpickler, hansard_files)):
+        logger.info(
+            f"Parsing file {file_idx + 1}/{len(hansard_files)}", path=file_entry.path
+        )
+
+        elements_stripped = [
+            element
+            for element in elements
+            if not check_is_hansard_header(element, elements[0])
+            and not check_is_hansard_page(element)
+        ]
+
+        section = HansardSection.DOCUMENT_START
+        parsed = Hansard(
+            meta=Meta(
+                source=file_entry.path, year=year, session=session, dun="selangor"
+            )
+        )
+        cache = None
+
+        for idx, element in enumerate(elements_stripped):
+            if check_is_hansard_section_present(element, section):
+                section = HansardSection.PRESENT
+
+            elif check_is_hansard_section_absent(element, section):
+                section = HansardSection.ABSENT
+
+            elif check_is_hansard_section_guest(element, section):
+                section = HansardSection.GUEST
+
+            elif check_is_hansard_section_officer(element, section):
+                section = HansardSection.OFFICER
+
+            elif check_is_hansard_section_start(element, section):
+                section = HansardSection.START
+
+            elif check_is_hansard_section_end(element, section):
+                section = HansardSection.END
+
+            elif check_is_hansard_event(element, section):
+                parsed = hansard_insert_cache(cache, parsed) if cache else parsed
+
+            elif check_is_hansard_assembly_person(element, section):
+                parsed = hansard_parse_assembly_person(parsed, element, section)
+
+            elif check_is_hansard_assembly_role(element, section):
+                parsed = hansard_parse_assembly_role(parsed, element, section)
+
+            elif check_is_hansard_guest(element, section):
+                parsed = hansard_parse_guest(parsed, element)
+
+            elif check_is_hansard_officer(element, section):
+                parsed = hansard_parse_officer(parsed, element)
+
+            elif check_is_hansard_speakline(element, section, parsed):
+                cache, parsed = hansard_parse_speakline(cache, parsed, element)
+
+            elif check_is_hansard_speakline_alternative(element, section):
+                cache, parsed = hansard_parse_speakline_alternative(
+                    cache, parsed, element
+                )
+
+            elif (
+                section == HansardSection.START
+                and cache
+                and not check_is_inquiry_answer(element)
+            ):
+                cache = hansard_cache_insert_element(cache, element)
+
+            elif int(os.environ.get("DEBUG", "0")) == 1:
+                logger.debug(
+                    "Skipping element",
+                    idx=idx,
+                    section=section,
+                    element=element,
+                    text=element.text,
+                )
+
+        parsed = hansard_insert_cache(cache, parsed) if cache else parsed
+
+        file_name = "{}/{}".format(
+            parse_path,
+            file_entry.name.replace(".pickle", f".json"),
+        )
+
+        logger.info(
+            f"Writing hansard to file {file_idx + 1}/{len(hansard_files)}",
+            source=file_entry.name,
+            parsed_inquiry=file_name,
+        )
+        with open(file_name, "w") as handle:
+            handle.write(parsed.json())
+
+
+def hansard_parse_assembly_person(
+    current: Hansard, element: Element, section: HansardSection
+) -> Hansard:
+    area = element.text[element.text.find("(") : element.text.find(")") + 1]
+    name = element.text.partition(area)[0].split(",")
+    role = element.text.partition(area)[-1]
+    person = Person(
+        name=name[0],
+        raw=element.text.partition(area)[0].strip(),
+        # FIXME some title cannot be extracted due to missing leading comma
+        title=[title.strip() for title in name[1:]],
+        area=area.strip("()"),
+        role=role.strip("()"),
+    )
+
+    return current._replace(
+        **(
+            {"present": current.present + [person]}
+            if section == HansardSection.PRESENT
+            else {"absent": current.absent + [person]}
+        )
+    )
+
+
+def hansard_parse_assembly_role(
+    current: Hansard, element: Element, section: HansardSection
+) -> Hansard:
+    result = current
+
+    role = element.text.strip("( )")
+
+    if section == HansardSection.PRESENT and role:
+        result = current._replace(
+            present=current.present[:-1] + [current.present[-1]._replace(role=role)]
+        )
+
+    return result
+
+
+def hansard_parse_guest(current: Hansard, element: Element) -> Hansard:
+    role_idx = max(
+        element.text.strip().find("Setiausaha"),
+        element.text.strip().find("Penasihat"),
+        element.text.strip().find("Pegawai"),
+    )
+    role = element.text.strip()[role_idx:]
+    name = element.text.strip().removesuffix(role).split(",")
+
+    return current._replace(
+        guest=current.guest
+        + [Person(name=name[0], title=name[1:], area=None, role=role)]
+    )
+
+
+def hansard_parse_officer(current: Hansard, element: Element) -> Hansard:
+    role_idx = reduce(
+        lambda current, incoming: incoming if (0 < incoming < current) else current,
+        [
+            element.text.strip().find("Setiausaha"),
+            element.text.strip().find("Penolong"),
+            element.text.strip().find("Bentara"),
+            element.text.strip().find("Pelapor"),
+        ],
+        inf,
+    )
+    role = element.text.strip()[role_idx:]
+    names = [
+        name.strip()
+        for name in element.text.strip()
+        .removesuffix(role)
+        .replace("Encik", "|Encik")
+        .replace("Puan", "|Puan")
+        .lstrip("|")
+        .split("|")
+    ]
+
+    return current._replace(
+        officer=current.officer + [Person(name=name, role=role) for name in names]
+    )
+
+
+def hansard_parse_speaker(current: Hansard, element: Element) -> str:
+    text = element.text.strip().upper()
+
+    for person in chain(current.present, current.guest):
+        if person.raw and text.startswith(person.raw.upper()):
+            return person.raw.upper()
+
+    for role in HANSARD_ROLES:
+        if text.startswith(role):
+            return role
+
+    for person in current.officer:
+        if person.role and text.startswith(person.role.upper()):
+            return person.role.upper()
+
+    return "_UNKNOWN"
+
+
+def hansard_parse_speakline(
+    cache: HansardCache | None, current: Hansard, element: Element
+) -> tuple[HansardCache, Hansard]:
+    speaker = hansard_parse_speaker(current, element)
+
+    return (
+        HansardCache(
+            speaker=Person(name=speaker),
+            content=[
+                ContentElement(
+                    type=type(element).__name__.lower(),
+                    value=element.text[len(speaker) :].strip(": "),
+                    image=None,
+                )
+            ],
+        ),
+        hansard_insert_cache(cache, current) if cache else current,
+    )
+
+
+def hansard_parse_speakline_alternative(
+    cache: HansardCache | None, current: Hansard, element: Element
+) -> tuple[HansardCache, Hansard]:
+    speaker = element.text.partition(":")[0].strip()
+    # name = speaker[speaker.find("(") : speaker.find(")") + 1] or speaker
+    # role = speaker.partition(name)[0].strip() or None
+
+    return (
+        HansardCache(
+            # person=Person(name=name.strip("( )"), role=role),
+            speaker=Person(name=speaker),
+            content=[
+                ContentElement(
+                    type=type(element).__name__.lower(),
+                    value="".join(element.text.partition(":")[2:]).strip(),
+                    image=None,
+                )
+            ],
+        ),
+        hansard_insert_cache(cache, current) if cache else current,
+    )
+
+
+def inquiry_append_content(
+    current: Inquiry, item: ContentElement, is_question: bool
+) -> Inquiry:
+    return current._replace(
+        **(
+            {"inquiries": current.inquiries[:-1] + [current.inquiries[-1] + [item]]}
+            if is_question
+            else {"responds": current.responds[:-1] + [current.responds[-1] + [item]]}
+        )
+    )
+
+
+def inquiry_create_new(
+    element: Element, file_entry: os.DirEntry, year: int, session: int, dun: str
+) -> Inquiry:
+    return Inquiry(
+        inquirer=Person(
+            name=element.text[
+                element.text.upper().rfind("DARIPADA") + 8 : element.text.find("(")
+            ].strip(),
+            area=element.text[element.text.find("(") + 1 : element.text.find(")")],
+        ),
+        meta=Meta(
+            source=file_entry.path,
+            year=year,
+            session=session,
+            dun=dun,
+        ),
+    )
+
+
+def inquiry_insert_new_content(
+    current: Inquiry, item: ContentElement, is_question: bool
+) -> Inquiry:
+    return current._replace(
+        **(
+            {"inquiries": current.inquiries + [[item]]}
+            if is_question
+            else {"responds": current.responds + [[item]]}
+        )
+    )
+
+
+def inquiry_insert_respondent_mention(current: Inquiry, element) -> Inquiry:
+    return current._replace(
+        number=int(element.text[: element.text.index(".")]),
+        respondent=Person(
+            name=element.text[element.text.lower().find("kepada") + 6 :].strip(" :-")
+        ),
+    )
+
+
+def inquiry_insert_title(current: Inquiry, element) -> Inquiry:
+    return current._replace(
+        title=element.text[element.text.find("TAJUK") + 5 :].strip(" :")
+    )
+
+
 def inquiry_parse(
-    year: int, session: int, inquiry_files: tuple[os.DirEntry[str]], parse_path: str
+    year: int,
+    session: int,
+    inquiry_files: tuple[os.DirEntry[str], ...],
+    parse_path: str,
 ) -> None:
     for file_idx, (file_entry, elements) in enumerate(map(unpickler, inquiry_files)):
-        if not check_is_enquiry_heading(elements[0]):
+        if not check_is_inquiry_heading(elements[0]):
             logger.info(
                 f"Skipping non inquiry file {file_idx + 1}/{len(inquiry_files)}",
                 path=file_entry.path,
@@ -293,45 +955,20 @@ def inquiry_parse(
         parsed: list[Inquiry] = []
         is_question = False
         for idx, element in enumerate(elements):
-            if check_is_enquiry_heading(element):
+            if check_is_inquiry_heading(element):
                 parsed.append(
-                    Inquiry(
-                        inquirer=Person(
-                            name=element.text[
-                                element.text.upper().rfind("DARIPADA")
-                                + 8 : element.text.find("(")
-                            ].strip(),
-                            area=element.text[
-                                element.text.find("(") + 1 : element.text.find(")")
-                            ],
-                        ),
-                        meta=Meta(
-                            source=file_entry.path,
-                            year=year,
-                            session=session,
-                            dun="selangor",
-                        ),
-                    )
+                    inquiry_create_new(element, file_entry, year, session, "selangor")
                 )
 
-            elif check_is_enquiry_title(element):
-                parsed[-1] = parsed[-1]._replace(
-                    title=element.text[element.text.find("TAJUK") + 5 :].strip(" :")
-                )
+            elif check_is_inquiry_title(element):
+                parsed.append(inquiry_insert_title(parsed.pop(), element))
 
-            elif check_is_enquiry_respondent_mention(element):
+            elif check_is_inquiry_respondent_mention(element):
                 is_question = True
 
-                parsed[-1] = parsed[-1]._replace(
-                    number=int(element.text[: element.text.index(".")]),
-                    respondent=Person(
-                        name=element.text[
-                            element.text.lower().find("kepada") + 6 :
-                        ].strip(" :-")
-                    ),
-                )
+                parsed.append(inquiry_insert_respondent_mention(parsed.pop(), element))
 
-            elif check_is_enquiry_answer(element):
+            elif check_is_inquiry_answer(element):
                 is_question = False
 
             else:
@@ -341,28 +978,14 @@ def inquiry_parse(
                     image=element.metadata.image_base64,
                 )
 
-                if check_is_enquiry_new_content(parsed[-1], is_question, element):
-                    parsed[-1] = parsed[-1]._replace(
-                        **(
-                            {"inquiries": parsed[-1].inquiries + [[item]]}
-                            if is_question
-                            else {"responds": parsed[-1].responds + [[item]]}
-                        )
+                if check_is_inquiry_new_content(parsed[-1], is_question, element):
+                    parsed.append(
+                        inquiry_insert_new_content(parsed.pop(), item, is_question)
                     )
 
                 else:
-                    parsed[-1] = parsed[-1]._replace(
-                        **(
-                            {
-                                "inquiries": parsed[-1].inquiries[:-1]
-                                + [parsed[-1].inquiries[-1] + [item]]
-                            }
-                            if is_question
-                            else {
-                                "responds": parsed[-1].responds[:-1]
-                                + [parsed[-1].responds[-1] + [item]]
-                            }
-                        )
+                    parsed.append(
+                        inquiry_append_content(parsed.pop(), item, is_question)
                     )
 
         for idx, inquiry in enumerate(parsed):
@@ -374,7 +997,7 @@ def inquiry_parse(
             logger.info(
                 f"Writing inquiry to file {idx + 1}/{len(parsed)}",
                 source=file_entry.name,
-                parsed_enquiry=file_name,
+                parsed_inquiry=file_name,
             )
             with open(file_name, "w") as handle:
                 handle.write(inquiry.json())
