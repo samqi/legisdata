@@ -10,6 +10,7 @@ from unstructured.documents.elements import Element, Title
 from legisdata.parser.common import (
     check_is_oral_inquiry_answer,
     check_is_oral_inquiry_heading,
+    last_item_replace,
     unpickler,
 )
 from legisdata.schema import (
@@ -76,9 +77,9 @@ def assembly_person_parse(
 
     return current._replace(
         **(
-            {"present": current.present + [person]}
+            {"present": [*current.present, person]}
             if section == HansardSection.PRESENT
-            else {"absent": current.absent + [person]}
+            else {"absent": [*current.absent, person]}
         )
     )
 
@@ -92,7 +93,9 @@ def assembly_role_parse(
 
     if section == HansardSection.PRESENT and role:
         result = current._replace(
-            present=current.present[:-1] + [current.present[-1]._replace(role=role)]
+            present=last_item_replace(
+                current.present, lambda last: last._replace(role=role)
+            )
         )
 
     return result
@@ -261,13 +264,13 @@ def check_is_speakline_alternative(element: Element, section: HansardSection) ->
 def cache_append_element(cache: HansardCache, element: Element) -> HansardCache:
     return cache._replace(
         is_question=cache.is_question or check_is_oral_inquiry_heading(element),
-        content=cache.content
-        + [
+        content=[
+            *cache.content,
             ContentElement(
                 type=type(element).__name__.lower(),
                 value=element.metadata.text_as_html or element.text,
                 image=element.metadata.image_base64,
-            )
+            ),
         ],
     )
 
@@ -280,33 +283,35 @@ def cache_insert(cache: HansardCache, current: Hansard) -> Hansard:
 
     if cache.is_question:
         result = current._replace(
-            debate=current.debate
-            + [
+            debate=[
+                *current.debate,
                 Questions(
                     content=[
                         Question(by=cache.speaker, role=None, content=cache.content)
                     ]
-                )
+                ),
             ]
         )
 
     elif check_is_answer(current):
-        questions = current.debate[-1]
-
         result = current._replace(
-            debate=current.debate[:-1]
-            + [
-                questions._replace(
-                    content=questions.content
-                    + [Answer(by=cache.speaker, role=None, content=cache.content)]
-                )
-            ]
+            debate=last_item_replace(
+                current.debate,
+                lambda questions: questions._replace(
+                    content=[
+                        *questions.content,
+                        Answer(by=cache.speaker, role=None, content=cache.content),
+                    ]
+                ),
+            )
         )
 
     else:
         result = current._replace(
-            debate=current.debate
-            + [Speech(by=cache.speaker, role=None, content=cache.content)]
+            debate=[
+                *current.debate,
+                Speech(by=cache.speaker, role=None, content=cache.content),
+            ]
         )
 
     return result
@@ -322,8 +327,10 @@ def guest_parse(current: Hansard, element: Element) -> Hansard:
     name = element.text.strip().removesuffix(role).split(",")
 
     return current._replace(
-        guest=current.guest
-        + [Person(name=name[0], title=name[1:], area=None, role=role)]
+        guest=[
+            *current.guest,
+            Person(name=name[0], title=name[1:], area=None, role=role),
+        ]
     )
 
 

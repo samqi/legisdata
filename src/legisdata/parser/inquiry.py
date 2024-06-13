@@ -6,6 +6,7 @@ from unstructured.documents.elements import Element, ListItem, Title
 from legisdata.parser.common import (
     check_is_oral_inquiry_answer,
     check_is_oral_inquiry_heading,
+    last_item_replace,
     unpickler,
 )
 from legisdata.schema import ContentElement, Inquiry, Meta, Person
@@ -34,9 +35,17 @@ def content_append_element(
 ) -> Inquiry:
     return current._replace(
         **(
-            {"inquiries": current.inquiries[:-1] + [current.inquiries[-1] + [item]]}
+            {
+                "inquiries": last_item_replace(
+                    current.inquiries, lambda inquiry: [*inquiry, item]
+                )
+            }
             if is_question
-            else {"responds": current.responds[:-1] + [current.responds[-1] + [item]]}
+            else {
+                "responds": last_item_replace(
+                    current.responds, lambda respond: [*respond, item]
+                )
+            }
         )
     )
 
@@ -46,9 +55,9 @@ def content_insert_new(
 ) -> Inquiry:
     return current._replace(
         **(
-            {"inquiries": current.inquiries + [[item]]}
+            {"inquiries": [*current.inquiries, [item]]}
             if is_question
-            else {"responds": current.responds + [[item]]}
+            else {"responds": [*current.responds, [item]]}
         )
     )
 
