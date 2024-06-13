@@ -129,7 +129,7 @@ class Hansard(NamedTuple):
     def json(self) -> str:
         def dump_value(
             value: Union[
-                list[Person], list[Union[Speech, Questions], None], NamedTuple
+                list[Person], list[Union[Speech, Questions]], NamedTuple, None
             ],
         ) -> Any:
             result = None
