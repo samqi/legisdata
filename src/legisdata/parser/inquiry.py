@@ -1,6 +1,8 @@
+import json
 import os
 
 import structlog
+import typedload
 from lxml import builder, etree
 from unstructured.documents.elements import Element, ListItem, Title
 
@@ -216,7 +218,7 @@ def parse(
                 parsed_inquiry=file_name,
             )
             with open(file_name, "w") as handle:
-                handle.write(inquiry.json())
+                json.dump(typedload.dump(inquiry), handle, indent=2)
 
 
 def respondent_insert(current: Inquiry, element) -> Inquiry:

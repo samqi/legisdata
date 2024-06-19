@@ -1,8 +1,19 @@
 import os
 import pickle
+from json import JSONEncoder
 from typing import Any, Callable
 
 from unstructured.documents.elements import Element, Title
+
+
+class Encoder(JSONEncoder):
+    def _iterencode(self, obj, markers=None):
+        if isinstance(obj, tuple) and hasattr(obj, "_asdict"):
+            gen = self._iterencode_dict(obj._asdict(), markers)  # type: ignore
+        else:
+            gen = JSONEncoder._iterencode(self, obj, markers)  # type: ignore
+        for chunk in gen:
+            yield chunk
 
 
 def check_is_answer_to_inquiry(element: Element) -> bool:

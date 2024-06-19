@@ -1,3 +1,4 @@
+import json
 import os
 from enum import Enum, auto
 from functools import reduce
@@ -5,6 +6,7 @@ from itertools import chain
 from math import inf
 
 import structlog
+import typedload
 from lxml import builder, etree
 from unstructured.documents.elements import Element, Title
 
@@ -570,4 +572,4 @@ def parse(
             parsed_inquiry=file_name,
         )
         with open(file_name, "w") as handle:
-            handle.write(parsed.json())
+            json.dump(typedload.dump(parsed), handle, indent=2)
