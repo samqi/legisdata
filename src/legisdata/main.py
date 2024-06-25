@@ -1,14 +1,22 @@
+import json
+import mimetypes
 import os
+import pickle
 import time
+from itertools import chain
 from posixpath import basename
 from random import randrange
-from typing import List
+from typing import Iterable, List
 
 import requests
 import structlog
 import typer
 from huggingface_hub import HfApi
 from parsel import Selector
+from unstructured.partition.pdf import partition_pdf
+
+from legisdata.parser.hansard import parse as hansard_parse
+from legisdata.parser.inquiry import parse as inquiry_parse
 
 app = typer.Typer()
 api = HfApi()
@@ -19,7 +27,7 @@ logger = structlog.get_logger()
 def download(year: int, session: int) -> None:
     logger.info("Requesting download", year=year, session=session)
 
-    download_archive(
+    archive_download(
         year,
         session,
         "hansard",
@@ -27,7 +35,7 @@ def download(year: int, session: int) -> None:
         "https://dewan.selangor.gov.my/penyata-rasmi/",
         "mb-2",
     )
-    download_archive(
+    archive_download(
         year,
         session,
         "inquiry",
@@ -43,11 +51,86 @@ def download(year: int, session: int) -> None:
 
 
 @app.command()
+def extract(year: int, session: int) -> None:
+    logger.info("Extracting PDF", year=year, session=session)
+
+    path_base = path_generate(year, session)
+    hansard_path = listing_get_path(path_base, "hansard")
+    inquiry_path = listing_get_path(path_base, "inquiry")
+    assert archive_exists(
+        hansard_path, inquiry_path
+    ), "Archive is not properly downloaded"
+
+    for archive_path in (hansard_path, inquiry_path):
+        os.makedirs(archive_path.replace("raw", "extract"), exist_ok=True)
+
+    target_files = tuple(
+        target
+        for target in chain(os.scandir(inquiry_path), os.scandir(hansard_path))
+        if target.is_file()
+        and mimetypes.guess_type(target.path)[0] == "application/pdf"
+    )
+
+    for idx, target_file in enumerate(target_files):
+        with open(
+            target_file.path.replace("raw", "extract") + ".pickle", "wb"
+        ) as file_extract:
+            logger.info(
+                f"Extracting file {idx + 1}/{len(target_files)}",
+                source=target_file.name,
+                target=file_extract.name,
+            )
+            pickle.dump(
+                partition_pdf(
+                    target_file.path,
+                    languages=["msa", "eng"],
+                    strategy="hi_res",
+                    extract_image_block_types=["Image", "Table"],
+                    extract_image_block_to_payload=True,
+                ),
+                file_extract,
+            )
+
+    logger.info("Uploading extracted archive to huggingface")
+    api.upload_folder(
+        folder_path="data", repo_id="sinarproject/legisdata", repo_type="dataset"
+    )
+
+
+@app.command()
 def parse(year: int, session: int) -> None:
-    pass
+    logger.info("Parsing extracted PDFs", year=year, session=session)
+
+    path_base = path_generate(year, session)
+    hansard_path = listing_get_path(path_base, "hansard").replace("raw", "extract")
+    inquiry_path = listing_get_path(path_base, "inquiry").replace("raw", "extract")
+    assert archive_exists(
+        hansard_path, inquiry_path
+    ), "Archive is not properly downloaded"
+
+    for archive_path in (hansard_path, inquiry_path):
+        os.makedirs(archive_path.replace("extract", "parse"), exist_ok=True)
+
+    hansard_parse(
+        year,
+        session,
+        tuple(target for target in os.scandir(hansard_path) if target.is_file()),
+        hansard_path.replace("extract", "parse"),
+    )
+    inquiry_parse(
+        year,
+        session,
+        tuple(target for target in os.scandir(inquiry_path) if target.is_file()),
+        inquiry_path.replace("extract", "parse"),
+    )
+
+    logger.info("Uploading parsed archive to huggingface")
+    api.upload_folder(
+        folder_path="data", repo_id="sinarproject/legisdata", repo_type="dataset"
+    )
 
 
-def download_archive(
+def archive_download(
     year: int,
     session: int,
     listing_name: str,
@@ -72,26 +155,54 @@ def download_archive(
     )
 
     logger.info(f"Creating directory to store {listing_name}")
-    os.makedirs(f"data/{year}/session-{session}/{listing_name}-raw", exist_ok=True)
+    os.makedirs(
+        listing_get_path(path_generate(year, session), listing_name), exist_ok=True
+    )
 
     listing_url_list = listing_get_session_files(listing_session_url, file_p_class)
-    for listing_idx, listing_url in enumerate(listing_url_list):
-        with open(
-            f"data/{year}/session-{session}/{listing_name}-raw/{basename(listing_url)}",
-            "wb",
-        ) as listing_file:
-            logger.info(
-                f"Fetching {listing_name} document {listing_idx + 1}/{len(listing_url_list)}",
-                url=listing_url,
-            )
-            listing_req = requests.get(listing_url)
+    with open(
+        f"{listing_get_path(path_generate(year, session), listing_name)}/url_list.json",
+        "w",
+    ) as list_file:
+        for listing_idx, listing_url in enumerate(listing_url_list):
+            with open(
+                f"{listing_get_path(path_generate(year, session), listing_name)}/{basename(listing_url)}",
+                "wb",
+            ) as listing_file:
+                list_file.write(
+                    "{}\n".format(
+                        json.dumps(
+                            {
+                                "url": listing_url,
+                                "path": list_file.name,
+                                "year": year,
+                                "session": "session",
+                                "dun": "selangor",
+                            }
+                        )
+                    )
+                )
 
-            logger.info(
-                f"Writing {listing_name} to destination", file=listing_file.name
-            )
-            listing_file.write(listing_req.content)
+                logger.info(
+                    f"Fetching {listing_name} document {listing_idx + 1}/{len(listing_url_list)}",
+                    url=listing_url,
+                )
+                listing_req = requests.get(listing_url)
 
-        time.sleep(randrange(5, 10))
+                logger.info(
+                    f"Writing {listing_name} to destination", file=listing_file.name
+                )
+                listing_file.write(listing_req.content)
+
+            time.sleep(randrange(5, 10))
+
+
+def archive_exists(*archive_list: Iterable[str]) -> bool:
+    return all(os.path.exists(archive_path) for archive_path in archive_list)  # type: ignore
+
+
+def listing_get_path(path_base: str, listing_name: str) -> str:
+    return f"{path_base}/{listing_name}-raw"
 
 
 def listing_get_session_files(listing_session_url: str, file_p_class: str) -> List[str]:
@@ -132,6 +243,10 @@ def listing_get_year_index(
         raise ValueError("Invalid year is requested")
 
     return listing_years.index(year)
+
+
+def path_generate(year: int, session: int) -> str:
+    return f"data/{year}/session-{session}"
 
 
 if __name__ == "__main__":
