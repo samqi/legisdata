@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import structlog
 import typedload
@@ -127,11 +128,14 @@ def create_new(
     dun: str,
     is_oral: bool,
 ) -> Inquiry:
+    name = element.text[
+        element.text.upper().rfind("DARIPADA") + 8 : element.text.find("(")
+    ].strip()
+
     return Inquiry(
         inquirer=Person(
-            name=element.text[
-                element.text.upper().rfind("DARIPADA") + 8 : element.text.find("(")
-            ].strip(),
+            name=name,
+            raw=name,
             area=element.text[element.text.find("(") + 1 : element.text.find(")")],
         ),
         is_oral=is_oral,
@@ -148,7 +152,7 @@ def parse(
     year: int,
     session: int,
     inquiry_files: tuple[os.DirEntry[str], ...],
-    parse_path: str,
+    parse_path: Path,
 ) -> None:
     for file_idx, (file_entry, elements) in enumerate(map(unpickler, inquiry_files)):
         if not (
@@ -222,11 +226,11 @@ def parse(
 
 
 def respondent_insert(current: Inquiry, element) -> Inquiry:
+    name = element.text[element.text.lower().find("kepada") + 6 :].strip(" :-")
+
     return current._replace(
         number=int(element.text[: element.text.index(".")]),
-        respondent=Person(
-            name=element.text[element.text.lower().find("kepada") + 6 :].strip(" :-")
-        ),
+        respondent=Person(name=name, raw=name),
     )
 
 

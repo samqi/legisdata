@@ -3,10 +3,11 @@ import mimetypes
 import os
 import pickle
 import time
+from enum import Enum
 from itertools import chain
+from pathlib import Path
 from posixpath import basename
 from random import randrange
-from typing import Iterable, List
 
 import requests
 import structlog
@@ -22,6 +23,16 @@ app = typer.Typer()
 api = HfApi()
 logger = structlog.get_logger()
 
+class ListingType(Enum):
+    Hansard = "hansard"
+    Inquiry = "inquiry"
+
+
+class ListingClass(Enum):
+    RAW = "raw"
+    EXTRACT = "extract"
+    PARSE = "parse"
+
 
 @app.command()
 def download(year: int, session: int) -> None:
@@ -30,7 +41,7 @@ def download(year: int, session: int) -> None:
     archive_download(
         year,
         session,
-        "hansard",
+        ListingType.Hansard,
         "hansard",
         "https://dewan.selangor.gov.my/penyata-rasmi/",
         "mb-2",
@@ -38,7 +49,7 @@ def download(year: int, session: int) -> None:
     archive_download(
         year,
         session,
-        "inquiry",
+        ListingType.Inquiry,
         "soalan",
         "https://dewan.selangor.gov.my/arkib-soalan-mulut-dan-soalan-bertulis/",
         "mb-1",
@@ -55,14 +66,16 @@ def extract(year: int, session: int) -> None:
     logger.info("Extracting PDF", year=year, session=session)
 
     path_base = path_generate(year, session)
-    hansard_path = listing_get_path(path_base, "hansard")
-    inquiry_path = listing_get_path(path_base, "inquiry")
+    hansard_path = data_get_path(path_base, ListingType.Hansard, ListingClass.RAW)
+    inquiry_path = data_get_path(path_base, ListingType.Inquiry, ListingClass.RAW)
     assert archive_exists(
         hansard_path, inquiry_path
     ), "Archive is not properly downloaded"
 
-    for archive_path in (hansard_path, inquiry_path):
-        os.makedirs(archive_path.replace("raw", "extract"), exist_ok=True)
+    for archive_type in (ListingType.Hansard, ListingType.Inquiry):
+        os.makedirs(
+            data_get_path(path_base, archive_type, ListingClass.EXTRACT), exist_ok=True
+        )
 
     target_files = tuple(
         target
@@ -102,26 +115,28 @@ def parse(year: int, session: int) -> None:
     logger.info("Parsing extracted PDFs", year=year, session=session)
 
     path_base = path_generate(year, session)
-    hansard_path = listing_get_path(path_base, "hansard").replace("raw", "extract")
-    inquiry_path = listing_get_path(path_base, "inquiry").replace("raw", "extract")
+    hansard_path = data_get_path(path_base, ListingType.Hansard, ListingClass.EXTRACT)
+    inquiry_path = data_get_path(path_base, ListingType.Inquiry, ListingClass.EXTRACT)
     assert archive_exists(
         hansard_path, inquiry_path
     ), "Archive is not properly downloaded"
 
-    for archive_path in (hansard_path, inquiry_path):
-        os.makedirs(archive_path.replace("extract", "parse"), exist_ok=True)
+    for archive_type in (ListingType.Hansard, ListingType.Inquiry):
+        os.makedirs(
+            data_get_path(path_base, archive_type, ListingClass.PARSE), exist_ok=True
+        )
 
     hansard_parse(
         year,
         session,
         tuple(target for target in os.scandir(hansard_path) if target.is_file()),
-        hansard_path.replace("extract", "parse"),
+        data_get_path(path_base, ListingType.Hansard, ListingClass.PARSE),
     )
     inquiry_parse(
         year,
         session,
         tuple(target for target in os.scandir(inquiry_path) if target.is_file()),
-        inquiry_path.replace("extract", "parse"),
+        data_get_path(path_base, ListingType.Inquiry, ListingClass.PARSE),
     )
 
     logger.info("Uploading parsed archive to huggingface")
@@ -133,40 +148,47 @@ def parse(year: int, session: int) -> None:
 def archive_download(
     year: int,
     session: int,
-    listing_name: str,
-    listing_class: str,
+    listing_type: ListingType,
+    listing_css_class: str,
     listing_idx_url: str,
     file_p_class: str,
 ) -> None:
-    logger.info(f"Retrieving the index for {listing_name}", url=listing_idx_url)
+    logger.info(f"Retrieving the index for {listing_type.value}", url=listing_idx_url)
     listing_idx_req = requests.get(listing_idx_url)
     listing_idx_html = Selector(text=listing_idx_req.text)
 
     listing_session_url = listing_get_session_url(
         listing_idx_html,
-        listing_class,
-        listing_get_year_index(listing_idx_html, listing_name, listing_class, year),
+        listing_css_class,
+        listing_get_year_index(
+            listing_idx_html, listing_type.value, listing_css_class, year
+        ),
         session,
     )
 
     logger.info(
-        f"Fetching {listing_name} list",
+        f"Fetching {listing_type.value} list",
         url=listing_session_url,
     )
 
-    logger.info(f"Creating directory to store {listing_name}")
+    logger.info(f"Creating directory to store {listing_type.value}")
     os.makedirs(
-        listing_get_path(path_generate(year, session), listing_name), exist_ok=True
+        data_get_path(path_generate(year, session), listing_type, ListingClass.RAW),
+        exist_ok=True,
     )
 
     listing_url_list = listing_get_session_files(listing_session_url, file_p_class)
     with open(
-        f"{listing_get_path(path_generate(year, session), listing_name)}/url_list.json",
+        data_get_path(path_generate(year, session), listing_type, ListingClass.RAW)
+        / "url_list.json",
         "w",
     ) as list_file:
         for listing_idx, listing_url in enumerate(listing_url_list):
             with open(
-                f"{listing_get_path(path_generate(year, session), listing_name)}/{basename(listing_url)}",
+                data_get_path(
+                    path_generate(year, session), listing_type, ListingClass.RAW
+                )
+                / basename(listing_url),
                 "wb",
             ) as listing_file:
                 list_file.write(
@@ -184,28 +206,31 @@ def archive_download(
                 )
 
                 logger.info(
-                    f"Fetching {listing_name} document {listing_idx + 1}/{len(listing_url_list)}",
+                    f"Fetching {listing_type.value} document {listing_idx + 1}/{len(listing_url_list)}",
                     url=listing_url,
                 )
                 listing_req = requests.get(listing_url)
 
                 logger.info(
-                    f"Writing {listing_name} to destination", file=listing_file.name
+                    f"Writing {listing_type.value} to destination",
+                    file=listing_file.name,
                 )
                 listing_file.write(listing_req.content)
 
             time.sleep(randrange(5, 10))
 
 
-def archive_exists(*archive_list: Iterable[str]) -> bool:
-    return all(os.path.exists(archive_path) for archive_path in archive_list)  # type: ignore
+def archive_exists(*archive_list: Path) -> bool:
+    return all(archive_path.exists() for archive_path in archive_list)
 
 
-def listing_get_path(path_base: str, listing_name: str) -> str:
-    return f"{path_base}/{listing_name}-raw"
+def data_get_path(
+    base_path: Path, listing_type: ListingType, listing_class: ListingClass
+) -> Path:
+    return base_path / f"{listing_type.value}-{listing_class.value}"
 
 
-def listing_get_session_files(listing_session_url: str, file_p_class: str) -> List[str]:
+def listing_get_session_files(listing_session_url: str, file_p_class: str) -> list[str]:
     listing_session_req = requests.get(listing_session_url)
     listing_session_html = Selector(text=listing_session_req.text)
 
@@ -245,8 +270,8 @@ def listing_get_year_index(
     return listing_years.index(year)
 
 
-def path_generate(year: int, session: int) -> str:
-    return f"data/{year}/session-{session}"
+def path_generate(year: int, session: int) -> Path:
+    return Path(".") / "data" / str(year) / f"session-{session}"
 
 
 if __name__ == "__main__":

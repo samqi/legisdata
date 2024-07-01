@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 class Person(NamedTuple):
     name: str
-    raw: str | None = None
+    raw: str
     title: list[str] = []
     area: str | None = None
     role: str | None = None
@@ -43,14 +43,14 @@ class Speech(NamedTuple):
 
 
 class Question(NamedTuple):
-    by: Person
+    inquirer: Person
     role: str | None
     content: list[ContentElement]
     is_oral: bool = False
 
 
 class Answer(NamedTuple):
-    by: Person
+    respondent: Person
     role: str | None
     content: list[ContentElement]
 

@@ -4,6 +4,7 @@ from enum import Enum, auto
 from functools import reduce
 from itertools import chain
 from math import inf
+from pathlib import Path
 
 import structlog
 import typedload
@@ -77,7 +78,12 @@ def akn_get_container(E: builder.ElementMaker, component: Speech | Questions):
             *[
                 E(
                     "question" if isinstance(item, Question) else "answer",
-                    E("from", item.by.name),
+                    E(
+                        "from",
+                        item.inquirer.name
+                        if isinstance(item, Question)
+                        else item.respondent.name,
+                    ),
                     E.div(*[E.p(content.value) for content in item.content]),
                 )
                 for item in component.content
@@ -159,7 +165,7 @@ def check_is_answer(current: Hansard) -> bool:
         and (
             (
                 isinstance(current.debate[-1].content[-1], Answer)
-                and current.debate[-1].content[-1].by.name in HANSARD_SPEAKERS
+                and current.debate[-1].content[-1].respondent.name in HANSARD_SPEAKERS
             )
             or not isinstance(current.debate[-1].content[-1], Answer)
         )
@@ -340,7 +346,9 @@ def cache_insert(cache: HansardCache, current: Hansard) -> Hansard:
                 *current.debate,
                 Questions(
                     content=[
-                        Question(by=cache.speaker, role=None, content=cache.content)
+                        Question(
+                            inquirer=cache.speaker, role=None, content=cache.content
+                        )
                     ]
                 ),
             ]
@@ -353,7 +361,9 @@ def cache_insert(cache: HansardCache, current: Hansard) -> Hansard:
                 lambda questions: questions._replace(
                     content=[
                         *questions.content,
-                        Answer(by=cache.speaker, role=None, content=cache.content),
+                        Answer(
+                            respondent=cache.speaker, role=None, content=cache.content
+                        ),
                     ]
                 ),
             )
@@ -382,7 +392,7 @@ def guest_parse(current: Hansard, element: Element) -> Hansard:
     return current._replace(
         guest=[
             *current.guest,
-            Person(name=name[0], title=name[1:], area=None, role=role),
+            Person(name=name[0], raw=name[0], title=name[1:], area=None, role=role),
         ]
     )
 
@@ -410,7 +420,8 @@ def officer_parse(current: Hansard, element: Element) -> Hansard:
     ]
 
     return current._replace(
-        officer=current.officer + [Person(name=name, role=role) for name in names]
+        officer=current.officer
+        + [Person(name=name, raw=name, role=role) for name in names]
     )
 
 
@@ -442,12 +453,12 @@ def speakline_alternative_parse(
     return (
         HansardCache(
             # person=Person(name=name.strip("( )"), role=role),
-            speaker=Person(name=speaker),
+            speaker=Person(name=speaker, raw=speaker),
             content=[
                 ContentElement(
                     type=type(element).__name__.lower(),
                     value="".join(element.text.partition(":")[2:]).strip(),
-                    image=None,
+                    image=element.metadata.image_base64,
                 )
             ],
         ),
@@ -462,12 +473,12 @@ def speakline_parse(
 
     return (
         HansardCache(
-            speaker=Person(name=speaker),
+            speaker=Person(name=speaker, raw=speaker),
             content=[
                 ContentElement(
                     type=type(element).__name__.lower(),
                     value=element.text[len(speaker) :].strip(": "),
-                    image=None,
+                    image=element.metadata.image_base64,
                 )
             ],
         ),
@@ -479,7 +490,7 @@ def parse(
     year: int,
     session: int,
     hansard_files: tuple[os.DirEntry[str], ...],
-    parse_path: str,
+    parse_path: Path,
 ) -> None:
     for file_idx, (file_entry, elements) in enumerate(map(unpickler, hansard_files)):
         logger.info(
