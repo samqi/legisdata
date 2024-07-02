@@ -1,0 +1,36 @@
+services:
+  database:
+    image: "postgres:16"
+    env_file:
+      - .env.docker
+    networks:
+      - legisdata
+
+  frontend:
+    build:
+      context: .
+      dockerfile: podman/frontend/Dockerfile
+      name: legisdata_frontend
+      no_cache: true
+      pull: true
+    ports:
+      - 0.0.0.0:8080:8080
+    env_file:
+      - .env.docker
+    networks:
+      - legisdata
+
+  backend:
+    build:
+      context: .
+      dockerfile: podman/backend/Dockerfile
+      name: legisdata_backend
+      no_cache: true
+      pull: true
+    env_file:
+      - .env.docker
+    networks:
+      - legisdata
+
+networks:
+  legisdata:

@@ -6,7 +6,7 @@ import typedload
 from django.db import transaction
 from django_typer.management import TyperCommand
 from legisdata import schema
-from legisdata.main import (
+from legisdata.common import (
     ListingClass,
     ListingType,
     archive_exists,

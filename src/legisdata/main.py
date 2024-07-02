@@ -3,9 +3,7 @@ import mimetypes
 import os
 import pickle
 import time
-from enum import Enum
 from itertools import chain
-from pathlib import Path
 from posixpath import basename
 from random import randrange
 
@@ -16,22 +14,19 @@ from huggingface_hub import HfApi
 from parsel import Selector
 from unstructured.partition.pdf import partition_pdf
 
+from legisdata.common import (
+    ListingClass,
+    ListingType,
+    archive_exists,
+    data_get_path,
+    path_generate,
+)
 from legisdata.parser.hansard import parse as hansard_parse
 from legisdata.parser.inquiry import parse as inquiry_parse
 
 app = typer.Typer()
 api = HfApi()
 logger = structlog.get_logger()
-
-class ListingType(Enum):
-    Hansard = "hansard"
-    Inquiry = "inquiry"
-
-
-class ListingClass(Enum):
-    RAW = "raw"
-    EXTRACT = "extract"
-    PARSE = "parse"
 
 
 @app.command()
@@ -220,16 +215,6 @@ def archive_download(
             time.sleep(randrange(5, 10))
 
 
-def archive_exists(*archive_list: Path) -> bool:
-    return all(archive_path.exists() for archive_path in archive_list)
-
-
-def data_get_path(
-    base_path: Path, listing_type: ListingType, listing_class: ListingClass
-) -> Path:
-    return base_path / f"{listing_type.value}-{listing_class.value}"
-
-
 def listing_get_session_files(listing_session_url: str, file_p_class: str) -> list[str]:
     listing_session_req = requests.get(listing_session_url)
     listing_session_html = Selector(text=listing_session_req.text)
@@ -268,10 +253,6 @@ def listing_get_year_index(
         raise ValueError("Invalid year is requested")
 
     return listing_years.index(year)
-
-
-def path_generate(year: int, session: int) -> Path:
-    return Path(".") / "data" / str(year) / f"session-{session}"
 
 
 if __name__ == "__main__":
