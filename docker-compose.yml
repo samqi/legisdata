@@ -27,10 +27,48 @@ services:
       name: legisdata_backend
       no_cache: true
       pull: true
+    volumes:
+      - ./certificates/root/root-ca.pem:/app/root-ca.pem
+      - ./certificates/admin/admin.pem:/app/admin.pem
+      - ./certificates/admin/admin-key.pem:/app/admin-key.pem
+      - ./certificates/node/node.pem:/app/node.pem
+      - ./certificates/node/node-key.pem:/app/node-key.pem
     env_file:
       - .env.docker
     networks:
       - legisdata
 
+  search-node:
+    image: opensearchproject/opensearch:latest
+    env_file:
+      - .env.docker
+    environment:
+      - node.name=search-node
+    ulimits:
+      memlock:
+        soft: -1 # Set memlock to unlimited (no soft or hard limit)
+        hard: -1
+      nofile:
+        soft: 65536 # Maximum number of open files for the opensearch user - set to at least 65536
+        hard: 65536
+    volumes:
+      - search-data:/usr/share/opensearch/data
+      - ./podman/opensearch/usr/share/opensearch/config/opensearch-dev.yml:/usr/share/opensearch/config/opensearch.yml
+      - ./podman/opensearch/usr/share/opensearch/config/opensearch-security/internal_users.yml:/usr/share/opensearch/config/opensearch-security/internal_users.yml
+      - ./certificates/root/root-ca.pem:/usr/share/opensearch/config/root-ca.pem
+      - ./certificates/admin/admin.pem:/usr/share/opensearch/config/admin.pem
+      - ./certificates/admin/admin-key.pem:/usr/share/opensearch/config/admin-key.pem
+      - ./certificates/node/node.pem:/usr/share/opensearch/config/node.pem
+      - ./certificates/node/node-key.pem:/usr/share/opensearch/config/node-key.pem
+    ports:
+      - 9200:9200
+      - 9600:9600
+    networks:
+      - legisdata
+
+volumes:
+  search-data:
+
 networks:
   legisdata:
+    name: legisdata

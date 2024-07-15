@@ -5,11 +5,11 @@ import Image from "react-bootstrap/Image";
 import Row from "react-bootstrap/Row";
 import { useSelector } from "react-redux";
 import { useLoaderData } from "react-router-dom";
-import { RootState } from "../app/store";
+import type { RootState } from "../app/store";
 import { contentGenerateId } from "../common";
 import Avatar from "../components/avatar";
 import SpeakLineControl from "../components/snippet-control";
-import * as Schema from "../schema";
+import type * as Schema from "../schema";
 
 function checkIsQuestion(
   item: Schema.Question | Schema.Answer
@@ -19,35 +19,35 @@ function checkIsQuestion(
 
 function Debate({ debate }: { debate: Schema.Debate }) {
   return (
-    <>
-      {debate.type == "Speech" ? (
-        // @ts-expect-error union type
-        <Speech speech={debate.value} />
-      ) : (
-        // @ts-expect-error union type
-        <QuestionSession session={debate.value} />
-      )}
-    </>
-  );
+			<>
+				{debate.type === "Speech" ? (
+					// @ts-expect-error union type
+					<Speech speech={debate.value} />
+				) : (
+					// @ts-expect-error union type
+					<QuestionSession session={debate.value} />
+				)}
+			</>
+		);
 }
 
 function QASpeakline({ item }: { item: Schema.Question | Schema.Answer }) {
   return (
-    <>
-      {item.content_list.map((content, idx) => (
-        <SpeakLine
-          key={idx}
-          idx={idx}
-          name={
-            checkIsQuestion(item) ? item.inquirer.name : item.respondent.name
-          }
-          content={content}
-          contentType="jawapan"
-          person={checkIsQuestion(item) ? item.inquirer : item.respondent}
-        />
-      ))}
-    </>
-  );
+			<>
+				{item.content_list.map((content, idx) => (
+					<SpeakLine
+						key={idx}
+						idx={idx}
+						name={
+							checkIsQuestion(item) ? item.inquirer.name : item.respondent.name
+						}
+						content={content}
+						contentType={checkIsQuestion(item) ? "pertanyaan" : "jawapan"}
+						person={checkIsQuestion(item) ? item.inquirer : item.respondent}
+					/>
+				))}
+			</>
+		);
 }
 
 function SpeakLine({

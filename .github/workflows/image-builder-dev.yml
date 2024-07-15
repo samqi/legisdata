@@ -1,4 +1,4 @@
-name: image builder
+name: image builder dev
 run-name: Building new docker containers
 on: [push]
 jobs:

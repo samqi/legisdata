@@ -64,6 +64,14 @@ class InquiryContent(ContentElement):
         InquiryList, related_name="content_list", on_delete=models.PROTECT
     )
 
+    @property
+    def inquirer(self) -> Person:
+        return self.inquiry.inquirer
+
+    @property
+    def inquiry(self) -> Inquiry:
+        return self.container_list.inquiry
+
 
 class RespondList(ContentElementList):
     inquiry = models.ForeignKey(
@@ -76,6 +84,14 @@ class RespondContent(ContentElement):
         RespondList, related_name="content_list", on_delete=models.PROTECT
     )
 
+    @property
+    def respondent(self) -> Person:
+        return self.inquiry.respondent
+
+    @property
+    def inquiry(self) -> Inquiry:
+        return self.container_list.inquiry
+
 
 class Speech(ContentElementList):
     hansard = models.ForeignKey(
@@ -83,12 +99,6 @@ class Speech(ContentElementList):
     )
     by = models.ForeignKey(Person, on_delete=models.PROTECT)
     role = models.CharField(null=True)
-
-
-class SpeechContent(ContentElement):
-    speech = models.ForeignKey(
-        Speech, related_name="content_list", on_delete=models.PROTECT
-    )
 
 
 class QuestionSession(ContentElementList):
@@ -107,24 +117,12 @@ class Question(ContentElementList):
     is_oral = models.BooleanField()
 
 
-class QuestionContent(ContentElement):
-    question = models.ForeignKey(
-        Question, related_name="content_list", on_delete=models.PROTECT
-    )
-
-
 class Answer(ContentElementList):
     session = models.ForeignKey(
         QuestionSession, related_name="answers", on_delete=models.PROTECT
     )
     respondent = models.ForeignKey(Person, on_delete=models.PROTECT)
     role = models.CharField(null=True)
-
-
-class AnswerContent(ContentElement):
-    answer = models.ForeignKey(
-        Answer, related_name="content_list", on_delete=models.PROTECT
-    )
 
 
 class Hansard(models.Model):
@@ -153,3 +151,45 @@ class Hansard(models.Model):
                 key=lambda item: item.idx,
             )
         )
+
+
+class SpeechContent(ContentElement):
+    speech = models.ForeignKey(
+        Speech, related_name="content_list", on_delete=models.PROTECT
+    )
+
+    @property
+    def by(self) -> Person:
+        return self.speech.by
+
+    @property
+    def hansard(self) -> Hansard:
+        return self.speech.hansard
+
+
+class QuestionContent(ContentElement):
+    question = models.ForeignKey(
+        Question, related_name="content_list", on_delete=models.PROTECT
+    )
+
+    @property
+    def inquirer(self) -> Person:
+        return self.question.inquirer
+
+    @property
+    def hansard(self) -> Hansard:
+        return self.question.session.hansard
+
+
+class AnswerContent(ContentElement):
+    answer = models.ForeignKey(
+        Answer, related_name="content_list", on_delete=models.PROTECT
+    )
+
+    @property
+    def respondent(self) -> Person:
+        return self.answer.respondent
+
+    @property
+    def hansard(self) -> Hansard:
+        return self.answer.session.hansard

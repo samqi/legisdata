@@ -52,7 +52,9 @@ def download(year: int, session: int) -> None:
 
     logger.info("Uploading downloaded archive to huggingface")
     api.upload_folder(
-        folder_path="data", repo_id="sinarproject/legisdata", repo_type="dataset"
+        folder_path="data",
+        repo_id=os.environ.get("LEGISDATA_HF_REPO", "sinarproject/legisdata"),
+        repo_type="dataset",
     )
 
 
@@ -101,7 +103,9 @@ def extract(year: int, session: int) -> None:
 
     logger.info("Uploading extracted archive to huggingface")
     api.upload_folder(
-        folder_path="data", repo_id="sinarproject/legisdata", repo_type="dataset"
+        folder_path="data",
+        repo_id=os.environ.get("LEGISDATA_HF_REPO", "sinarproject/legisdata"),
+        repo_type="dataset",
     )
 
 
@@ -136,7 +140,9 @@ def parse(year: int, session: int) -> None:
 
     logger.info("Uploading parsed archive to huggingface")
     api.upload_folder(
-        folder_path="data", repo_id="sinarproject/legisdata", repo_type="dataset"
+        folder_path="data",
+        repo_id=os.environ.get("LEGISDATA_HF_REPO", "sinarproject/legisdata"),
+        repo_type="dataset",
     )
 
 

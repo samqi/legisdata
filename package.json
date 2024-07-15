@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "(cd src/legisweb_frontend && vite)",
-    "build": "(cd src/legisweb_frontend && tsc -b && vite build --emptyOutDir --outDir=../../podman/caddy/data)",
+    "build": "(cd src/legisweb_frontend && tsc -b && vite build --emptyOutDir --outDir=../../podman/frontend/data)",
     "lint": "(cd src/legisweb_frontend && eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0)",
     "preview": "(cd src/legisweb_frontend && vite preview)"
   },
@@ -13,6 +13,7 @@
     "@popperjs/core": "^2.11.8",
     "@reduxjs/toolkit": "^2.2.5",
     "bootstrap": "^5.3.3",
+    "html-react-parser": "^5.1.10",
     "react": "^18.3.1",
     "react-bootstrap": "^2.10.3",
     "react-bootstrap-icons": "^1.11.4",

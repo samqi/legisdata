@@ -13,6 +13,9 @@ dist
 dist-ssr
 *.local
 
+certificates
+podman/opensearch/usr/share/opensearch/config/opensearch-security/*
+
 #yarn
 .yarn/*
 !.yarn/cache
