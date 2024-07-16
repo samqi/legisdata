@@ -275,24 +275,30 @@ export default function Root() {
 
 	return (
 		<>
-			<Navigation />
+			<div className="d-flex flex-column justify-content-between min-vh-100">
+				<div>
+					<Navigation />
 
-			<ToastContainer className="fixed-top" position="top-center">
-				<Toast
-					show={toast.show}
-					bg={toast.variant}
-					onClose={() => dispatch(toastHide())}
-					autohide={true}
-				>
-					<Toast.Body>{toast.message}</Toast.Body>
-				</Toast>
-			</ToastContainer>
+					<ToastContainer className="fixed-top" position="top-center">
+						<Toast
+							show={toast.show}
+							bg={toast.variant}
+							onClose={() => dispatch(toastHide())}
+							autohide={true}
+						>
+							<Toast.Body>{toast.message}</Toast.Body>
+						</Toast>
+					</ToastContainer>
 
-			<Container id="detail" className="pt-5 pb-5">
-				<Stack gap={3}>{useOutlet() === null ? <Home /> : <Outlet />}</Stack>
-			</Container>
+					<Container id="detail" className="pt-5 pb-5">
+						<Stack gap={3}>
+							{useOutlet() === null ? <Home /> : <Outlet />}
+						</Stack>
+					</Container>
+				</div>
 
-			<Footer />
+				<Footer />
+			</div>
 		</>
 	);
 }
