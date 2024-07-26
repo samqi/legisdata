@@ -1,9 +1,14 @@
 :8080 {
 	encode zstd gzip
 
-	root * /data
-	file_server
+	handle /api* {
+		reverse_proxy backend:8000
+	}
 
-	reverse_proxy /api backend:8000
-	reverse_proxy /api/* backend:8000
+	handle {
+		root * /data
+
+		try_files {path} /index.html
+		file_server
+	}
 }
