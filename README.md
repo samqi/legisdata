@@ -1,7 +1,7 @@
 # LegisData Repository
 
 ## Quickstart
-This is the LegisData repository which will hold the code for Legislative Data codes & services.
+This is the LegisData repository which will hold the code for Legislative Data codes & services. some changes here
 
 ## Setting up the development environment
 
